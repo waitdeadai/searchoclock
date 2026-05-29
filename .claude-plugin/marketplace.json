@@ -11,7 +11,7 @@
   "plugins": [
     {
       "name": "searchoclock",
-      "source": "./searchoclock",
+      "source": "./",
       "description": "On a Bash command failure, injects date-anchored deep-research troubleshooting context, dispatches a research subagent to recommend the most durable fix from live dated sources, and requires an independent second model (Haiku 4.5) to agree from the raw evidence before the fix is trusted. Goal-scoped, inter-agent, standalone.",
       "version": "0.3.0",
       "author": { "name": "waitdeadai" },
