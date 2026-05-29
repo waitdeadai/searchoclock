@@ -96,6 +96,13 @@ typescript-eslint on `@ts-ignore`/`any`.
 /plugin install searchoclock@searchoclock
 ```
 
+**Or via the [waitdeadai family marketplace](https://github.com/waitdeadai/claude-plugins)** (installs alongside the other waitdead hooks):
+
+```bash
+/plugin marketplace add waitdeadai/claude-plugins
+/plugin install searchoclock@waitdeadai-plugins
+```
+
 Hooks activate automatically once the plugin is enabled. Validate before publishing with
 `claude plugin validate . --strict`. After a mid-session update, run `/reload-plugins`.
 
