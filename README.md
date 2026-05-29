@@ -1,7 +1,7 @@
 # Search o'Clock — marketplace
 
 <p align="center">
-  <img src="assets/og.png" alt="Search o'Clock — date-aware, inter-agent error-troubleshooting hook" width="760">
+  <img src="assets/mascot.png" alt="Search o'Clock — the waitdead rabbit checking today's date" width="300">
 </p>
 
 This repository is a Claude Code **plugin marketplace** containing one plugin:
