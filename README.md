@@ -226,6 +226,7 @@ Part of the [waitdeadai](https://github.com/waitdeadai) Claude Code hook family:
 [`no-fake-cite`](https://github.com/waitdeadai/no-fake-cite),
 [`llm-dark-patterns`](https://github.com/waitdeadai/llm-dark-patterns).
 
-## License
+## License & privacy
 
-Apache-2.0. See [LICENSE](LICENSE).
+Apache-2.0. See [LICENSE](LICENSE). searchoclock collects nothing — no telemetry, no network calls of
+its own, no personal data; see [PRIVACY.md](PRIVACY.md).
