@@ -1,0 +1,79 @@
+{
+  "_comment": [
+    "Manual (non-plugin) install of searchoclock — for users who don't use the plugin marketplace.",
+    "1) Copy searchoclock.sh to .claude/hooks/searchoclock.sh and run: chmod +x .claude/hooks/searchoclock.sh",
+    "2) Merge the \"hooks\" block below into your .claude/settings.json (project or user).",
+    "Dependencies: bash + python3 on PATH. The hook never blocks (always exit 0).",
+    "Optional tuning (environment variables, defaults shown):",
+    "  SEARCHOCLOCK_ENABLE=1            master kill switch",
+    "  SEARCHOCLOCK_COOLDOWN_SEC=900    per-error-signature dedup window",
+    "  SEARCHOCLOCK_MIN_INTERVAL_SEC=60 global rate limit between injections",
+    "  SEARCHOCLOCK_MAX_PER_SESSION=8   hard ceiling of injections per session",
+    "  SEARCHOCLOCK_SEVERITY_MIN=low    minimum severity to inject (low|medium|high)",
+    "  SEARCHOCLOCK_TEAM_SIZE=3         parallel researchers suggested for high severity (max 5)",
+    "  SEARCHOCLOCK_GOAL_SCOPE=auto     auto|off|<literal scope string>",
+    "  SEARCHOCLOCK_STATE_DIR=$CLAUDE_PROJECT_DIR/.searchoclock",
+    "Double-validation (independent second model) knobs:",
+    "  SEARCHOCLOCK_VALIDATE=1                                  master switch for the validation gate",
+    "  SEARCHOCLOCK_VALIDATOR_MODEL=claude-haiku-4-5-20251001  independent verifier model id",
+    "  SEARCHOCLOCK_VALIDATOR_ESCALATE_MODEL=claude-sonnet-4-6 verifier on disagreement/low confidence",
+    "  SEARCHOCLOCK_VALIDATOR_CROSS_PROVIDER=                  non-Anthropic verifier id for high-severity/irreversible fixes",
+    "  SEARCHOCLOCK_VALIDATE_MIN_CONFIDENCE=4                  integer (1-5) trust floor",
+    "Proactive pre-flight (opt-in, off by default) + workflow/scorecard knobs:",
+    "  SEARCHOCLOCK_PROACTIVE=0                 1 = enable the PreToolUse pre-flight nudge (selective)",
+    "  SEARCHOCLOCK_PROACTIVE_GUARD=off         off|ask|deny for destructive commands (never blocks unless ask/deny)",
+    "  SEARCHOCLOCK_PROACTIVE_TRIGGERS=dep,destructive,version   which trigger classes are armed",
+    "  SEARCHOCLOCK_SCORECARD=0                 1 = emit the Q/T/R scorecard from the validator",
+    "  SEARCHOCLOCK_MAX_GLOBAL=24               cross-agent injection ceiling (dynamic-workflow concurrency)",
+    "  SEARCHOCLOCK_WORKFLOW_TEAM_SIZE=2        high-severity fan-out inside a workflow/subagent",
+    "WORKFLOW MODE: web tools + the subagents must be pre-allowed (see the permissions block below),",
+    "or the researcher/validator stall on a mid-run prompt inside background/workflow agents."
+  ],
+  "hooks": {
+    "PostToolUseFailure": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/searchoclock.sh\"",
+            "timeout": 8
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/searchoclock.sh\"",
+            "timeout": 8
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/searchoclock.sh\" preflight",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  },
+  "permissions": {
+    "_comment": "Required for workflow / background-agent mode so the researcher/validator don't stall on a prompt.",
+    "allow": [
+      "WebSearch",
+      "WebFetch(domain:*)",
+      "Agent(searchoclock:searchoclock-researcher)",
+      "Agent(searchoclock:searchoclock-validator)"
+    ]
+  }
+}

@@ -1,0 +1,27 @@
+{
+  "_comment": [
+    "OpenAI Codex CLI adapter for searchoclock-core.",
+    "Codex CLI's PostToolUse hook also runs after Bash commands that exit non-zero and includes tool_response,",
+    "so it is the failure surface. The handler pipes the event JSON to `socx hook`; socx self-gates on failure.",
+    "VERIFY the exact hooks.json schema + field names against https://developers.openai.com/codex/hooks (2026)",
+    "before relying on this — Codex's hook payload shape may differ from the normalized keys socx reads",
+    "(socx accepts command/exit_code/stdout/stderr/error or a tool_response object).",
+    "Set SOCX_HARNESS=codex so the protocol names the harness."
+  ],
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "socx",
+            "args": ["hook"],
+            "env": { "SOCX_HARNESS": "codex" },
+            "timeout": 8
+          }
+        ]
+      }
+    ]
+  }
+}

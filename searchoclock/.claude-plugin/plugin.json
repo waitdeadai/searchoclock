@@ -1,0 +1,31 @@
+{
+  "name": "searchoclock",
+  "displayName": "Search o'Clock",
+  "description": "On a Bash command failure, injects date-anchored deep-research troubleshooting context and dispatches a research subagent (searchoclock:searchoclock-researcher) to probe candidate fixes against live, dated sources and recommend the most durable one — then an INDEPENDENT second model (searchoclock:searchoclock-validator, Haiku 4.5) must agree from the raw evidence before the fix is trusted. Registers on PostToolUseFailure (primary) and PostToolUse (defensive), with an OPT-IN proactive PreToolUse pre-flight that nudges (non-blocking) on risky/version-sensitive commands before they run. Concurrency-safe for Opus 4.8 dynamic workflows / parallel agents; optional Q/T/R (quality/truthfulness/relevance) scorecard. Goal-scoped, inter-agent, fully standalone. Needs bash + python3; never blocks the agent loop.",
+  "version": "0.3.0",
+  "author": {
+    "name": "waitdeadai",
+    "url": "https://github.com/waitdeadai"
+  },
+  "homepage": "https://github.com/waitdeadai/searchoclock",
+  "repository": "https://github.com/waitdeadai/searchoclock",
+  "license": "Apache-2.0",
+  "keywords": [
+    "claude-code",
+    "hooks",
+    "posttoolusefailure",
+    "troubleshooting",
+    "deep-research",
+    "date-aware",
+    "subagent",
+    "double-validation",
+    "validator",
+    "cross-model",
+    "pretooluse",
+    "proactive",
+    "workflows",
+    "agent-teams",
+    "goal-mode",
+    "ai-safety"
+  ]
+}

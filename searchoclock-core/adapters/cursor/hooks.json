@@ -1,0 +1,19 @@
+{
+  "_comment": [
+    "Cursor adapter for searchoclock-core (Cursor 1.7+). Place at <project>/.cursor/hooks.json.",
+    "afterShellExecution is the command-failure surface; hooks exchange JSON over stdio.",
+    "The handler pipes the event to `socx hook` and Cursor surfaces stdout back into context.",
+    "VERIFY the exact hook event names + payload shape against https://cursor.com/docs/hooks (2026);",
+    "socx reads command/exit_code/stdout/stderr from the normalized superset, so a tiny shim may be",
+    "needed to map Cursor's field names if they differ. Set SOCX_HARNESS=cursor."
+  ],
+  "version": 1,
+  "hooks": {
+    "afterShellExecution": [
+      { "command": "socx hook", "env": { "SOCX_HARNESS": "cursor" } }
+    ],
+    "postToolUse": [
+      { "command": "socx hook", "env": { "SOCX_HARNESS": "cursor" } }
+    ]
+  }
+}

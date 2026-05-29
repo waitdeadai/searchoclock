@@ -1,0 +1,358 @@
+#!/usr/bin/env bash
+# socx — Search o'Clock core engine (harness-agnostic).
+#
+# On a command failure, emit a date-anchored, durability-ranked, double-validated
+# deep-research TROUBLESHOOTING PROTOCOL on stdout, so ANY agentic CLI fixes the
+# error against CURRENT sources instead of a stale pretrained guess.
+#
+# Deterministic (no model in this path), dependency-light (bash + python3), and
+# FAIL-OPEN: any internal error -> exit 0, emit nothing, never block the harness.
+#
+# MODES
+#   socx hook          read a normalized failure event (JSON) on stdin, emit protocol on stdout
+#   socx run -- CMD…   run CMD; on non-zero exit, emit the protocol for that failure
+#   socx text          render the protocol for a demo failure (debug)
+#   socx json          print a structured summary (signature/severity/len) for a demo (debug)
+#   socx selftest      exit 0 if python3 is present and the protocol renders
+#
+# Adapters translate their harness's native payload into the normalized event and
+# pipe it to `socx hook`, then surface stdout via the harness's context channel.
+# See adapters/ and README.md.  Apache-2.0 · github.com/waitdeadai/searchoclock-core
+
+set -euo pipefail
+
+MODE="${1:-hook}"; shift || true
+
+# ---- socx run -- CMD… : shell-wrapper mode (universal fallback) --------------
+if [ "$MODE" = "run" ]; then
+  [ "${1:-}" = "--" ] && shift || true
+  if [ "$#" -eq 0 ]; then echo "usage: socx run -- <command> [args…]" >&2; exit 0; fi
+  # kill switch
+  case "${SOCX_ENABLE:-${SEARCHOCLOCK_ENABLE:-1}}" in 0|false|False|FALSE|no|NO|off|OFF) exec "$@";; esac
+  CMD_STR="$*"
+  ERRFILE="$(mktemp 2>/dev/null || echo /tmp/socx.$$.err)"
+  # run the command, tee stderr so the user still sees it, capture for analysis
+  set +e
+  "$@" 2> >(tee "$ERRFILE" >&2)
+  rc=$?
+  set -e
+  if [ "$rc" -ne 0 ] && command -v python3 >/dev/null 2>&1; then
+    STDERR_CAP="$(tail -c 8000 "$ERRFILE" 2>/dev/null || true)"
+    rm -f "$ERRFILE" 2>/dev/null || true
+    printf '%s' "{\"hook_event_name\":\"command.failed\",\"tool_name\":\"shell\",\"command\":$(python3 -c 'import json,sys;print(json.dumps(sys.argv[1]))' "$CMD_STR"),\"exit_code\":$rc,\"stderr\":$(python3 -c 'import json,sys;print(json.dumps(sys.argv[1]))' "$STDERR_CAP")}" \
+      | "$0" hook || true
+  fi
+  rm -f "$ERRFILE" 2>/dev/null || true
+  exit "$rc"   # preserve the command's real exit code for the harness
+fi
+
+# ---- early kill switch (hook/debug modes) -----------------------------------
+case "$MODE" in
+  text|--text|json|--json|test|selftest) : ;;
+  *) case "${SOCX_ENABLE:-${SEARCHOCLOCK_ENABLE:-1}}" in 0|false|False|FALSE|no|NO|off|OFF) exit 0 ;; esac ;;
+esac
+
+command -v python3 >/dev/null 2>&1 || exit 0
+
+PROJECT_DIR="${SEARCHOCLOCK_STATE_BASE:-${CLAUDE_PROJECT_DIR:-$(pwd)}}"
+[ -d "$PROJECT_DIR" ] || PROJECT_DIR="$(pwd)"
+
+INPUT_FILE="$(mktemp 2>/dev/null || echo /tmp/socx.$$.json)"
+trap 'rm -f "$INPUT_FILE" 2>/dev/null || true' EXIT
+if [ -t 0 ]; then printf '{}\n' > "$INPUT_FILE"; else cat > "$INPUT_FILE" 2>/dev/null || true; [ -s "$INPUT_FILE" ] || printf '{}\n' > "$INPUT_FILE"; fi
+
+python3 - "$MODE" "$PROJECT_DIR" "$INPUT_FILE" <<'PY' || exit 0
+import os, sys, json, re, time, hashlib, glob, tempfile
+import datetime as dt
+
+MODE        = (sys.argv[1] if len(sys.argv) > 1 else "hook").lower()
+PROJECT_DIR = sys.argv[2] if len(sys.argv) > 2 else os.getcwd()
+INPUT_FILE  = sys.argv[3] if len(sys.argv) > 3 else ""
+
+def env(name, default):
+    # honor SOCX_<name>, then SEARCHOCLOCK_<name>, then CLAUDE_<name>
+    for prefix in ("SOCX_", "SEARCHOCLOCK_", "CLAUDE_"):
+        v = os.environ.get(prefix + name)
+        if v not in (None, ""):
+            return v
+    return default
+
+def env_int(name, d):
+    try: return int(str(env(name, d)).strip())
+    except Exception: return int(d)
+
+def truthy(v): return str(v).strip().lower() in ("1", "true", "yes", "on")
+
+ENABLE          = env("ENABLE", "1")
+COOLDOWN        = env_int("COOLDOWN_SEC", 900)
+MIN_INTERVAL    = env_int("MIN_INTERVAL_SEC", 60)
+MAX_PER_SESSION = env_int("MAX_PER_SESSION", 8)
+RESEARCH_WINDOW = env_int("RESEARCH_WINDOW_SEC", 600)
+REPEAT_ESCALATE = env_int("REPEAT_ESCALATE", 2)
+SEVERITY_MIN    = str(env("SEVERITY_MIN", "low")).lower()
+MIN_CANDIDATES  = max(1, min(7, env_int("MIN_CANDIDATES", 3)))
+SOLUTION_MODE   = str(env("SOLUTION_MODE", "durable")).lower()
+PROBE_ALL       = truthy(env("PROBE_ALL", "1"))
+VALIDATE        = truthy(env("VALIDATE", "1"))
+VALIDATOR_MODEL = env("VALIDATOR_MODEL", "claude-haiku-4-5-20251001")
+VALIDATE_MIN_CONF = env_int("VALIDATE_MIN_CONFIDENCE", 4)
+EXCERPT_CHARS   = max(120, env_int("EXCERPT_CHARS", 1200))
+IGNORE_EXTRA    = env("IGNORE_CMD_PATTERN", "")
+STATE_DIR       = env("STATE_DIR", os.path.join(PROJECT_DIR, ".searchoclock"))
+HARNESS         = env("HARNESS", "") or "unknown harness"
+SEV_RANK = {"low": 0, "medium": 1, "high": 2}
+
+def stop(): raise SystemExit(0)
+if not truthy(ENABLE) and MODE not in ("text","--text","json","--json","test","selftest"): stop()
+
+def read_input():
+    try:
+        raw = open(INPUT_FILE, encoding="utf-8", errors="replace").read()
+        return json.loads(raw) if raw.strip() else {}
+    except Exception:
+        return {}
+
+data = read_input()
+
+def gv(*keys):
+    for k in keys:
+        if isinstance(data, dict) and data.get(k) not in (None, ""):
+            return data[k]
+    return None
+
+event   = gv("hook_event_name") or ""
+tool    = gv("tool_name") or ""
+session = str(gv("session_id") or "default")
+ti = data.get("tool_input")
+cmd = gv("command") or (ti.get("command") if isinstance(ti, dict) else (ti if isinstance(ti, str) else "")) or ""
+cmd = str(cmd)
+
+tr = data.get("tool_response")
+trd = tr if isinstance(tr, dict) else {}
+stdout = str(gv("stdout") or (trd.get("stdout") if trd else "") or (tr if isinstance(tr, str) else ""))
+stderr = str(gv("stderr") or (trd.get("stderr") if trd else "") or "")
+top_error = data.get("error")
+top_error = top_error if isinstance(top_error, str) else (json.dumps(top_error) if top_error else "")
+
+def to_int(x):
+    try: return int(x)
+    except Exception: return None
+exit_code = None
+for k in ("exit_code", "exitCode", "returnCode"):
+    ec = to_int(data.get(k)) if data.get(k) is not None else to_int(trd.get(k))
+    if ec is not None: exit_code = ec; break
+is_err = any((trd.get(k) is True or (isinstance(trd.get(k), str) and trd.get(k).strip())) for k in ("is_error","isError")) or bool(data.get("is_error"))
+interrupted = bool(trd.get("interrupted")) or bool(data.get("interrupted")) or bool(data.get("is_interrupt"))
+FAILURE_EVENTS = ("posttoolusefailure","command.failed","tool.error","afterShellExecution".lower(),"posttooluse-failure")
+
+def is_failure():
+    if event.lower() in FAILURE_EVENTS: return True
+    if exit_code is not None and exit_code != 0: return True
+    if is_err or interrupted or top_error: return True
+    pat = env("FAILURE_PATTERN", "")
+    if pat:
+        try: return bool(re.search(pat, "\n".join([stderr, stdout, top_error]), re.I))
+        except Exception: return False
+    return False
+
+def excerpt():
+    s = (stderr or top_error or stdout or "(no output captured)").strip() or "(no output captured)"
+    if len(s) <= EXCERPT_CHARS: return s
+    return s[:EXCERPT_CHARS*2//3] + "\n  ...[truncated]...\n  " + s[-EXCERPT_CHARS//3:]
+
+def head_cmd(c):
+    c = (c or "").strip()
+    if not c: return ""
+    try:
+        import shlex; parts = shlex.split(c.splitlines()[0])
+    except Exception:
+        parts = c.split()
+    i = 0
+    while i < len(parts) and "=" in parts[i] and not parts[i].startswith("-"): i += 1
+    while i < len(parts) and parts[i] in ("sudo","env","command","time","nice","nohup","exec","xargs","stdbuf"): i += 1
+    return os.path.basename(parts[i] if i < len(parts) else (parts[0] if parts else ""))
+
+IGNORE = re.compile(r"^(socx|socx-run|searchoclock|websearch|webfetch|grep|rg|ag|find|fd|ls|cat|head|tail|less|more|pwd|cd|echo|printf|true|false|:|which|type|whatis|man|tldr|curl|wget|http|https|httpie|lynx|w3m|clear)$", re.I)
+def ignore_cmd(c):
+    h = head_cmd(c)
+    if h and IGNORE.match(h): return True
+    if re.search(r"(^|\s)(--help|--version)(\s|$)", c or "") and not re.search(r"[;&|\n]", c or ""): return True
+    if re.search(r"\bgh\s+(api|search)\b", c or ""): return True
+    if IGNORE_EXTRA:
+        try:
+            if re.search(IGNORE_EXTRA, c or "", re.I): return True
+        except Exception: pass
+    return False
+
+def signature(c, exc):
+    n = exc or ""
+    n = re.sub(r"[A-Za-z]:\\\\[^\s:]+", "<path>", n)
+    n = re.sub(r"(/[\w.\-]+){2,}/?", "<path>", n)
+    n = re.sub(r"\b0x[0-9a-fA-F]+\b", "<addr>", n)
+    n = re.sub(r"\b[0-9a-fA-F]{7,40}\b", "<hash>", n)
+    n = re.sub(r"\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}[:\d.]*Z?", "<ts>", n)
+    n = re.sub(r"\b\d+\b", "N", n)
+    n = re.sub(r"\s+", " ", n).strip().lower()
+    return hashlib.sha1((head_cmd(c) + " :: " + n)[:600].encode("utf-8","replace")).hexdigest()[:12]
+
+def severity(occ, c, exc):
+    t = ((c or "") + " " + (exc or "")).lower()
+    sec = re.search(r"\b(auth|credential|credentials|permission denied|unauthorized|forbidden|401|403|token|secret|cert|tls|ssl|payment|billing)\b", t)
+    dest = re.search(r"\b(database|migration|drop table|production|prod|deploy|data loss|truncate)\b", t)
+    bre = re.search(r"build failed|compilation|compile error|\bci\b|test suite|\d+ (errors|failing|failed)|cannot find module|modulenotfound|no such file", t)
+    sev = "low"
+    if sec or dest or bre: sev = "medium"
+    if (sec and dest) or occ >= REPEAT_ESCALATE: sev = "high"
+    return sev
+
+def goal_context():
+    gs = env("GOAL_SCOPE", "auto")
+    if gs and gs.lower() not in ("auto","off"): return gs.strip()[:240]
+    if gs and gs.lower() == "off": return None
+    def first_heading(p):
+        try: txt = open(p, encoding="utf-8", errors="replace").read(2000)
+        except Exception: return None
+        for line in txt.splitlines():
+            s = line.strip()
+            if not s: continue
+            m = re.match(r"^(?:#+\s*|goal:\s*|##\s*goal\s*:?\s*)(.+)$", s, re.I)
+            if m and m.group(1).strip(): return m.group(1).strip()[:240]
+            if s.lower() not in ("# spec","spec"): return re.sub(r"^#+\s*","",s)[:240]
+        return None
+    for sp in sorted(glob.glob(os.path.join(PROJECT_DIR, ".claudemax","state","agent-teams-*","*.SPEC.md"))):
+        h = first_heading(sp)
+        if h: return h
+    return first_heading(os.path.join(PROJECT_DIR, "SPEC.md"))
+
+def clock():
+    ln = dt.datetime.now().astimezone()
+    return ln.isoformat(timespec="seconds"), ln.astimezone(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), str(ln.year)
+
+PROTOCOL = """SEARCH O'CLOCK — date-aware failure troubleshooting (from the searchoclock core)
+
+A command just failed in {{HARNESS}}. The current date is {{NOW_LOCAL}} (UTC {{NOW_UTC}}); the year is {{YEAR}}. If web search/fetch is available here, use it. A remembered fix may predate a {{YEAR}} breaking change, and the first fix that silences the error is often a brittle band-aid, not the durable root-cause fix.
+
+FAILED COMMAND:
+  {{CMD}}
+
+ERROR (excerpt):
+{{ERROR_EXCERPT}}
+
+ERROR SIGNATURE: {{SIG}}    SEVERITY: {{SEVERITY}}
+
+SCOPE: {{GOAL_CONTEXT}}
+
+Do this before re-running the command or applying a remembered fix:
+
+1. Name the failure: the actual error class + the specific tool/library/version implicated (from the lockfile/manifest), not a guess.
+
+2. RESEARCH (clean context). If your harness can dispatch a subagent, spawn a focused researcher; otherwise do this yourself. {{PROBE_LINE}} For each: run date/version-qualified live searches ("<tool> <error> {{YEAR}}", "<tool> changelog breaking change {{YEAR}}", "<tool> migration {{YEAR}}"), prefer official docs/changelogs/release notes/the project's own issue tracker over blogs and the top-voted Stack Overflow answer, cross-check >=2 INDEPENDENT current sources, and cite each source's publish/update date + your access date ({{NOW_LOCAL}}).
+
+3. DURABILITY RUBRIC — score each candidate (-1 brittle / 0 / +1 durable; weight the first three ~2x): ROOT CAUSE (non-reproducible by the same trigger, not just silenced); OFFICIAL & FORWARD-COMPATIBLE (supported migration/upgrade/config, within ~2 major releases of current); NOT EOL/DEPRECATED; SECURITY (no disabled audit/SSL/signature checks; prefer override-to-PATCHED over pin-to-silence); MAINTENANCE/BLAST RADIUS; REVERSIBILITY + a regression test. Brittle-hack flags (count against): --force / --no-verify / --legacy-peer-deps, blanket downgrade or pin, eslint-disable / @ts-ignore / cast-to-any, hand-edited lockfile or go.sum, FROM :latest, bypassed checksum/verify.
+
+4. Verify dependency/build fixes on a CLEAN checkout / frozen lockfile (npm ci, pnpm --frozen-lockfile, uv sync --frozen, cargo --locked) — passing tests alone is not proof of durability.
+
+5. {{RECOMMEND_LINE}}
+
+{{VALIDATE_BLOCK}}
+
+Stay within SCOPE — no unrelated refactors or side-quests; if a durable fix must leave scope, say so and stop. If no live source confirms a durable fix for this version as of {{YEAR}}, output insufficient_data rather than guessing."""
+
+def render():
+    nl, nu, yr = clock()
+    exc = excerpt()
+    sig = signature(cmd, exc)
+    scope = goal_context() or "No goal/SPEC detected — keep the fix minimal and local to the failing command; do not refactor unrelated code."
+    occ = render._occ if hasattr(render, "_occ") else 1
+    sev = severity(occ, cmd, exc)
+    exc_block = "\n".join("  " + l for l in exc.splitlines()) or "  (no output captured)"
+    exc_one = re.sub(r"\s+", " ", exc).strip()[:280]
+    probe = PROBE_ALL and SOLUTION_MODE in ("durable","both")
+    if probe:
+        probe_line = "Enumerate >= %d distinct candidate fixes covering the realistic solution space (upgrade to the fixed release; a scoped override/constraint to a PATCHED version; the official codemod/migration; a config change; a documented workaround), then rank them on the durability rubric below and recommend the most durable." % MIN_CANDIDATES
+        rec = "Recommend the most effective LONG-TERM fix (root cause + exact change + dated sources + confidence); label the fastest STOP-GAP separately (bridge-only: comment + ticket + narrow + time-box); flag brittle hacks."
+    else:
+        probe_line = "Find the single most reliable fix (prefer the more durable option when it is no slower)."
+        rec = "Recommend the single verified fix (root cause + exact change + dated sources + confidence); flag brittle hacks."
+    if VALIDATE:
+        vb = ("6. VALIDATE with an INDEPENDENT second model. Build a claim object (literal error + signature, failed command, the proposed change as a concrete diff/command, a one-line falsifiable claim, the cited sources WITH their verbatim fetched text, and the reproducibility command). Hand it — and ONLY it, never your reasoning — to a separate, cheaper model (default %s) and require it to AGREE from the evidence alone before the fix is trusted. Adopt only if it agrees with quoted supporting evidence and confidence>=%d; otherwise revise or escalate. For security/irreversible fixes use a different-PROVIDER verifier (same-family agreement is correlated, not fully independent)." % (VALIDATOR_MODEL, VALIDATE_MIN_CONF))
+    else:
+        vb = "6. (Independent second-model validation disabled — the recommended fix is unverified by a second model; apply with extra care.)"
+    txt = PROTOCOL
+    for k, v in {
+        "{{HARNESS}}": HARNESS, "{{NOW_LOCAL}}": nl, "{{NOW_UTC}}": nu, "{{YEAR}}": yr,
+        "{{CMD}}": cmd or "(unknown)", "{{ERROR_EXCERPT}}": exc_block, "{{SIG}}": sig,
+        "{{SEVERITY}}": sev, "{{GOAL_CONTEXT}}": scope, "{{PROBE_LINE}}": probe_line,
+        "{{RECOMMEND_LINE}}": rec, "{{VALIDATE_BLOCK}}": vb,
+    }.items():
+        txt = txt.replace(k, v)
+    if len(txt) > 9500: txt = txt[:9400] + "\n...[searchoclock context truncated to fit a 10k cap]..."
+    return txt, sig, sev, scope, exc
+
+# ---- debug modes ------------------------------------------------------------
+if MODE in ("text","--text","json","--json","test","selftest"):
+    if MODE == "selftest":
+        print("socx selftest: OK"); raise SystemExit(0)
+    if not (stderr or stdout or top_error):
+        globals().__setitem__("stderr", "Error: Cannot find module 'vite'  (demo)")
+        globals().__setitem__("cmd", cmd or "npm run build")
+    txt, sig, sev, scope, exc = render()
+    if MODE in ("json","--json"):
+        print(json.dumps({"signature": sig, "severity": sev, "goal_context": scope, "len": len(txt), "harness": HARNESS}, indent=2))
+    else:
+        print(txt)
+    raise SystemExit(0)
+
+# ---- hook mode --------------------------------------------------------------
+if tool and tool.lower() not in ("bash","shell","terminal","command","exec","run","run_command",""):
+    stop()
+if not is_failure(): stop()
+if ignore_cmd(cmd): stop()
+
+exc = excerpt(); sig = signature(cmd, exc); now = int(time.time())
+
+def load():
+    try:
+        s = json.load(open(os.path.join(STATE_DIR,"state.json"), encoding="utf-8"))
+        return s if isinstance(s, dict) else {}
+    except Exception: return {}
+def save(s):
+    try:
+        os.makedirs(STATE_DIR, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=STATE_DIR, prefix=".st.", suffix=".tmp")
+        with os.fdopen(fd,"w",encoding="utf-8") as f: json.dump(s, f)
+        os.replace(tmp, os.path.join(STATE_DIR,"state.json"))
+    except Exception: pass
+
+st = load()
+if st.get("session_id") != session: st["session_id"] = session; st["session_count"] = 0
+fired = st.get("fired") if isinstance(st.get("fired"), dict) else {}
+st["fired"] = fired
+rec = fired.get(sig) if isinstance(fired.get(sig), dict) else {"last":0,"count":0}
+rec["count"] = int(rec.get("count",0)) + 1; occ = rec["count"]; fired[sig] = rec
+render._occ = occ
+
+def stop_save(): save(st); stop()
+sev = severity(occ, cmd, exc)
+high_bypass = (sev == "high") and not int(rec.get("last",0))
+if int(st.get("researching_until",0)) > now and not high_bypass: stop_save()
+if (now - int(st.get("last_fire_epoch",0))) < MIN_INTERVAL and not high_bypass: stop_save()
+if int(rec.get("last",0)) and (now - int(rec.get("last",0))) < COOLDOWN: stop_save()
+if int(st.get("session_count",0)) >= MAX_PER_SESSION: stop_save()
+if SEV_RANK.get(sev,0) < SEV_RANK.get(SEVERITY_MIN,0): stop_save()
+
+rec["last"] = now; st["last_fire_epoch"] = now
+st["session_count"] = int(st.get("session_count",0)) + 1
+st["researching_until"] = now + RESEARCH_WINDOW
+save(st)
+try:
+    nl, nu, _ = clock()
+    os.makedirs(STATE_DIR, exist_ok=True)
+    open(os.path.join(STATE_DIR,"last-error.md"),"w",encoding="utf-8").write(
+        "# searchoclock — last captured failure\n\n- Captured: %s (UTC %s)\n- Signature: `%s`\n- Severity: %s\n- Scope: %s\n\n## Failed command\n\n```\n%s\n```\n\n## Error excerpt\n\n```\n%s\n```\n" % (nl, nu, sig, sev, (goal_context() or "(none)"), cmd or "(unknown)", exc))
+except Exception: pass
+
+txt, _, _, _, _ = render()
+print(txt)
+raise SystemExit(0)
+PY

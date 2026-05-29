@@ -1,0 +1,40 @@
+name: Bug report
+description: searchoclock fired when it shouldn't have, or didn't fire when it should have.
+labels: [bug]
+body:
+  - type: textarea
+    id: reproducer
+    attributes:
+      label: Hook input (stdin JSON)
+      description: The PostToolUseFailure / PostToolUse JSON payload the hook received (redact secrets).
+      render: json
+    validations:
+      required: true
+  - type: textarea
+    id: observed
+    attributes:
+      label: Observed behavior
+      description: What the hook did (injected context / stayed silent / error), and the exact stdout if any.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What you expected (fire / stay silent), and why.
+    validations:
+      required: true
+  - type: input
+    id: python-version
+    attributes:
+      label: python3 version
+      description: Output of `python3 --version`.
+    validations:
+      required: true
+  - type: input
+    id: cli-version
+    attributes:
+      label: Claude Code version
+      description: Output of `claude --version` (helps triage version-specific hook regressions, e.g. additionalContext drop on the Bash matcher in #55889).
+    validations:
+      required: true

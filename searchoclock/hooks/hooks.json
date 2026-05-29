@@ -1,0 +1,51 @@
+{
+  "_comment": [
+    "searchoclock hook wiring (modern plugin pattern; paths via ${CLAUDE_PLUGIN_ROOT}).",
+    "PostToolUseFailure(Bash) is the PRIMARY trigger: a non-zero Bash exit fires PostToolUseFailure, NOT PostToolUse (verified 2026-05-29 against code.claude.com/docs/en/hooks + anthropics/claude-code#24908).",
+    "PostToolUse(Bash) is a DEFENSIVE secondary: the same script self-gates there and only fires on an explicit failure signal (exit_code!=0 / is_error / interrupted / error).",
+    "The script never blocks (exit 0); it injects hookSpecificOutput.additionalContext."
+  ],
+  "hooks": {
+    "PostToolUseFailure": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash",
+            "args": ["${CLAUDE_PLUGIN_ROOT}/searchoclock.sh"],
+            "timeout": 8,
+            "statusMessage": "Search o'Clock: gathering current troubleshooting context…"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash",
+            "args": ["${CLAUDE_PLUGIN_ROOT}/searchoclock.sh"],
+            "timeout": 8
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash",
+            "args": ["${CLAUDE_PLUGIN_ROOT}/searchoclock.sh", "preflight"],
+            "timeout": 5,
+            "statusMessage": "Search o'Clock: pre-flight currency check…"
+          }
+        ]
+      }
+    ]
+  }
+}

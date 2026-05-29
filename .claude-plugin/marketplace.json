@@ -1,0 +1,34 @@
+{
+  "name": "searchoclock",
+  "owner": {
+    "name": "waitdeadai",
+    "email": "proeliteinterface@gmail.com"
+  },
+  "metadata": {
+    "description": "Search o'Clock — a date-aware, inter-agent error-troubleshooting hook for Claude Code: reactive failure research + independent second-model validation + opt-in proactive pre-flight, concurrency-safe for dynamic workflows.",
+    "version": "0.3.0"
+  },
+  "plugins": [
+    {
+      "name": "searchoclock",
+      "source": "./searchoclock",
+      "description": "On a Bash command failure, injects date-anchored deep-research troubleshooting context, dispatches a research subagent to recommend the most durable fix from live dated sources, and requires an independent second model (Haiku 4.5) to agree from the raw evidence before the fix is trusted. Goal-scoped, inter-agent, standalone.",
+      "version": "0.3.0",
+      "author": { "name": "waitdeadai" },
+      "homepage": "https://github.com/waitdeadai/searchoclock",
+      "repository": "https://github.com/waitdeadai/searchoclock",
+      "license": "Apache-2.0",
+      "category": "optimization",
+      "keywords": [
+        "claude-code",
+        "hooks",
+        "posttoolusefailure",
+        "troubleshooting",
+        "deep-research",
+        "date-aware",
+        "subagent",
+        "ai-safety"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,71 @@
+name: tests
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  fixtures:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify dependencies
+        run: python3 --version
+
+      - name: Syntax check
+        run: bash -n ./searchoclock.sh
+
+      - name: T1 — PostToolUseFailure(Bash) injects context
+        run: |
+          out=$(printf '%s' '{"session_id":"ci","hook_event_name":"PostToolUseFailure","tool_name":"Bash","tool_input":{"command":"npm run build"},"tool_response":{"stderr":"Error: Cannot find module x"},"exit_code":1}' \
+            | SEARCHOCLOCK_STATE_DIR="$RUNNER_TEMP/t1" bash ./searchoclock.sh hook)
+          echo "$out" | grep -q '"hookSpecificOutput"' || { echo "FAIL: expected an injection"; exit 1; }
+          echo "$out" | python3 -c 'import sys,json; json.load(sys.stdin)' || { echo "FAIL: invalid JSON"; exit 1; }
+
+      - name: T1b — real-shape PostToolUseFailure (top-level error, no tool_response)
+        run: |
+          out=$(printf '%s' '{"session_id":"ci","hook_event_name":"PostToolUseFailure","tool_name":"Bash","tool_input":{"command":"npm run build"},"tool_use_id":"x","error":"npm ERR! build failed: Cannot find module vite"}' \
+            | SEARCHOCLOCK_STATE_DIR="$RUNNER_TEMP/t1b" bash ./searchoclock.sh hook)
+          echo "$out" | grep -q '"hookSpecificOutput"' || { echo "FAIL: real-shape failure did not fire"; exit 1; }
+          echo "$out" | grep -q 'Cannot find module vite' || { echo "FAIL: top-level error not used as excerpt"; exit 1; }
+
+      - name: T2 — PostToolUse success is silent (git 'Already up to date.')
+        run: |
+          out=$(printf '%s' '{"session_id":"ci","hook_event_name":"PostToolUse","tool_name":"Bash","tool_input":{"command":"git pull"},"tool_response":{"stdout":"Already up to date.","stderr":""}}' \
+            | SEARCHOCLOCK_STATE_DIR="$RUNNER_TEMP/t2" bash ./searchoclock.sh hook)
+          [ -z "$out" ] || { echo "FAIL: expected silent, got: $out"; exit 1; }
+
+      - name: T3 — clone progress on stderr is silent
+        run: |
+          out=$(printf '%s' '{"session_id":"ci","hook_event_name":"PostToolUse","tool_name":"Bash","tool_input":{"command":"git clone https://x/y.git"},"tool_response":{"stderr":"Cloning into y..."}}' \
+            | SEARCHOCLOCK_STATE_DIR="$RUNNER_TEMP/t3" bash ./searchoclock.sh hook)
+          [ -z "$out" ] || { echo "FAIL: expected silent"; exit 1; }
+
+      - name: T4 — self-exclusion (curl) is silent
+        run: |
+          out=$(printf '%s' '{"session_id":"ci","hook_event_name":"PostToolUseFailure","tool_name":"Bash","tool_input":{"command":"curl https://x/y"},"tool_response":{"stderr":"curl: (22)"},"exit_code":22}' \
+            | SEARCHOCLOCK_STATE_DIR="$RUNNER_TEMP/t4" bash ./searchoclock.sh hook)
+          [ -z "$out" ] || { echo "FAIL: expected silent"; exit 1; }
+
+      - name: T5 — non-Bash tool is silent
+        run: |
+          out=$(printf '%s' '{"session_id":"ci","hook_event_name":"PostToolUseFailure","tool_name":"Edit","tool_input":{"file_path":"/x"},"error":"nope"}' \
+            | SEARCHOCLOCK_STATE_DIR="$RUNNER_TEMP/t5" bash ./searchoclock.sh hook)
+          [ -z "$out" ] || { echo "FAIL: expected silent"; exit 1; }
+
+      - name: T6 — kill switch (SEARCHOCLOCK_ENABLE=0) is silent
+        run: |
+          out=$(printf '%s' '{"session_id":"ci","hook_event_name":"PostToolUseFailure","tool_name":"Bash","tool_input":{"command":"npm run build"},"exit_code":1}' \
+            | SEARCHOCLOCK_ENABLE=0 SEARCHOCLOCK_STATE_DIR="$RUNNER_TEMP/t6" bash ./searchoclock.sh hook)
+          [ -z "$out" ] || { echo "FAIL: expected silent"; exit 1; }
+
+      - name: T7 — empty stdin does not crash
+        run: |
+          out=$(printf '' | SEARCHOCLOCK_STATE_DIR="$RUNNER_TEMP/t7" bash ./searchoclock.sh hook)
+          [ -z "$out" ] || { echo "FAIL: expected silent"; exit 1; }
+
+      - name: T8 — debug modes render
+        run: |
+          echo '{}' | bash ./searchoclock.sh text | grep -q "SEARCH O'CLOCK" || { echo "FAIL: text mode"; exit 1; }
+          echo '{}' | bash ./searchoclock.sh json | python3 -c 'import sys,json; json.load(sys.stdin)' || { echo "FAIL: json mode"; exit 1; }
