@@ -1,5 +1,9 @@
 # Search o'Clock — marketplace
 
+<p align="center">
+  <img src="assets/og.png" alt="Search o'Clock — date-aware, inter-agent error-troubleshooting hook" width="760">
+</p>
+
 This repository is a Claude Code **plugin marketplace** containing one plugin:
 [`searchoclock`](./searchoclock) — a date-aware, inter-agent error-troubleshooting hook.
 

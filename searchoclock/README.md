@@ -4,6 +4,10 @@
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 ![Claude Code hook](https://img.shields.io/badge/Claude%20Code-PostToolUseFailure%20hook-d97757)
 
+<p align="center">
+  <img src="../assets/mascot.png" alt="Search o'Clock mascot — the waitdead rabbit checking today's date" width="260">
+</p>
+
 > **Your AI ships fixes from before its training cutoff.** It defaults to the old, most-common pattern
 > instead of the current API; band-aids the symptom (`--force`, `@ts-ignore`, editing the failing
 > test) so the real bug ships; skips the web-search tool that's right there; and burns retry loops on
